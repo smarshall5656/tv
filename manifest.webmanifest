@@ -1,0 +1,12 @@
+{
+  "name": "TorBox Stream",
+  "short_name": "TorBox Stream",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0c0f1f",
+  "theme_color": "#0c0f1f",
+  "icons": [
+    { "src": "icon.png", "sizes": "256x256", "type": "image/png" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
