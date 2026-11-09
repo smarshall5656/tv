@@ -46,7 +46,36 @@ async function search(query) {
     catalog('movie', 'top', `search=${q}`).catch(() => []),
     catalog('series', 'top', `search=${q}`).catch(() => []),
   ]);
-  return [...movies, ...series];
+  const results = [...movies, ...series];
+  // Search hits carry no popularity numbers, so read them from each title's details (cached).
+  const metas = await mapLimit(results, 16, (r) => withTimeout(meta(r.type, r.id), 3000).catch(() => null));
+  const enriched = results.map((r, i) => {
+    const m = metas[i];
+    if (!m) return r;
+    return { ...r, popularities: m.popularities, popularity: m.popularity, imdbRating: m.imdbRating ?? r.imdbRating };
+  });
+  return SearchRank.rankResults(enriched, query);
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+function withTimeout(promise, ms) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { t = setTimeout(() => reject(new Error('timeout')), ms); }),
+  ]).finally(() => clearTimeout(t));
 }
 
 async function meta(type, id) {

@@ -187,6 +187,7 @@ function renderCard(item, wide = false) {
 }
 
 // ---------- search ----------
+let searchSeq = 0;
 function renderSearch() {
   const results = h('div', { class: 'grid' });
   const status = h('p', { class: 'empty' }, 'Search movies and shows by title.');
@@ -199,11 +200,14 @@ function renderSearch() {
         const q = input.value.trim();
         if (q.length < 2) { results.replaceChildren(); status.textContent = 'Search movies and shows by title.'; return; }
         status.textContent = 'Searching…';
+        const mine = ++searchSeq;
         try {
           const items = await api.search(q);
+          if (mine !== searchSeq) return; // a newer search started; drop this stale result
           status.textContent = items.length ? '' : `No titles match “${q}”.`;
           results.replaceChildren(...items.map((i) => renderCard(i)));
         } catch (err) {
+          if (mine !== searchSeq) return;
           status.textContent = `Search failed: ${err.message}`;
         }
       }, 350);
