@@ -100,6 +100,35 @@ async function listStreams(type, id) {
   return { streams, errors: [], hasSources: true };
 }
 
+// Torrentio sometimes marks a file "on TorBox" ([TB+]) when TorBox still has to download it. Its link
+// then leads VLC to a 30-second "downloading" clip instead of the video. A page can't read where the
+// link redirects (neither Torrentio's clip nor TorBox's API allows it), but a <video> element may load
+// it, so load just the metadata and look at the length: the clip is 30 s, a real title runs far longer.
+// Answers 'downloading', 'ok', or 'unknown' (timed out; or the browser can't open the file, e.g. MKV,
+// which means it isn't the MP4 clip).
+const PLACEHOLDER_MAX_SECONDS = 120;
+function probeStream(url, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    let timer;
+    const done = (answer) => {
+      clearTimeout(timer);
+      v.onloadedmetadata = v.onerror = null;
+      v.removeAttribute('src');
+      v.load(); // stop downloading
+      resolve(answer);
+    };
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => done(Number.isFinite(v.duration) && v.duration > 0 && v.duration < PLACEHOLDER_MAX_SECONDS ? 'downloading' : 'ok');
+    v.onerror = () => done('ok');
+    timer = setTimeout(() => done('unknown'), timeoutMs);
+    v.src = url;
+    v.load();
+  });
+}
+
 // eslint-disable-next-line no-unused-vars
 const api = {
   getSettings: async () => ({ torrentio: maskLink(settings.get('torrentio')), hasTorrentio: Boolean(torrentioBase(settings.get('torrentio'))) }),
@@ -128,6 +157,7 @@ const api = {
   search: (q) => Cinemeta.search(q),
   getMeta: (type, id) => Cinemeta.meta(type, id),
   listStreams,
+  probeStream,
 
   // Remembers what was sent to VLC so it shows under Recently Watched.
   async markWatched(item, videoId, videoName) {

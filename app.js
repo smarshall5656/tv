@@ -308,7 +308,7 @@ async function loadStreams(panel, meta, videoId, videoName, autoplay = false) {
 
   const ready = streams.filter((s) => s.cached);
   const later = streams.filter((s) => !s.cached);
-  const row = (s) => h('button', { class: 'stream', title: s.title, onclick: () => play(meta, videoId, videoName, s) },
+  const row = (s) => h('button', { class: 'stream', title: s.title, onclick: () => play(meta, videoId, videoName, s, s.cached ? ready : []) },
     h('span', { class: 'q' }, s.quality || 'SD'),
     h('div', { style: 'min-width:0' },
       h('div', { class: 't' }, s.title),
@@ -326,7 +326,7 @@ async function loadStreams(panel, meta, videoId, videoName, autoplay = false) {
       h('div', { class: 'streams' }, later.slice(0, 40).map(row))));
   }
   panel.replaceChildren(heading, ...body);
-  if (autoplay && ready[0]) play(meta, videoId, videoName, ready[0]);
+  if (autoplay && ready[0]) play(meta, videoId, videoName, ready[0], ready, true);
   else if (autoplay && streams.length) toast('Nothing is ready for this title yet. Pick a stream below.');
 }
 
@@ -337,9 +337,33 @@ const playLinks = {
   vlc: (url) => `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`,
   infuse: (url) => `infuse://x-callback-url/play?url=${encodeURIComponent(url)}`,
 };
-function play(meta, videoId, videoName, stream) {
+// Files Torrentio called ready that turned out to be still downloading on TorBox (this visit only).
+const notReadyUrls = new Set();
+let playSeq = 0;
+// `ready` is the title's list of Ready streams, used to offer (or, when autoplaying, jump to) the next
+// one if this file turns out to be still downloading.
+function play(meta, videoId, videoName, stream, ready = [], autoplay = false) {
+  const mine = ++playSeq;
   const title = videoName ? `${meta.name} · ${videoName}` : meta.name;
   const status = h('p', { class: 'note', role: 'status' });
+  const nextReady = () => ready.find((s) => s !== stream && !notReadyUrls.has(s.url));
+  const check = h('p', { class: 'note check' }, 'Checking that TorBox has this file ready…');
+  api.probeStream(stream.url).then((answer) => {
+    if (mine !== playSeq || playerEl.hidden) return; // sheet closed or another stream picked
+    if (answer !== 'downloading') { check.remove(); return; }
+    notReadyUrls.add(stream.url);
+    const next = nextReady();
+    if (autoplay && next) {
+      toast('That file is still downloading on TorBox. Picked the next ready one.');
+      play(meta, videoId, videoName, next, ready, true);
+      return;
+    }
+    check.className = 'note err';
+    check.replaceChildren('TorBox is still downloading this file, so VLC would only show a “downloading” message. ',
+      next
+        ? h('button', { class: 'btn small', onclick: () => play(meta, videoId, videoName, next, ready) }, 'Try the next ready stream')
+        : 'Try again in a few minutes, or pick another stream.');
+  });
   const linkBox = h('textarea', { class: 'link-box', id: 'stream-link', readonly: true, rows: 2, 'aria-label': 'Stream link' });
   linkBox.value = stream.url;
   const remember = () => {
@@ -374,6 +398,7 @@ function play(meta, videoId, videoName, stream) {
       h('h2', { id: 'sheet-title' }, title),
       h('button', { class: 'icon-btn', 'aria-label': 'Close', html: ICON.close, onclick: close })),
     h('p', { class: 'sheet-file' }, h('b', {}, [stream.quality, stream.size].filter(Boolean).join(' · ') || 'Stream'), ' ', stream.title),
+    check,
     h('div', { class: 'sheet-actions' }, vlcBtn, infuseBtn),
     h('p', { class: 'note' }, 'Not playing after a minute? Come back and pick another Ready stream, ideally an MP4 or x264 one.'),
     h('details', { class: 'more' },
