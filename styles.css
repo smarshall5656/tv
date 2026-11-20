@@ -51,6 +51,19 @@ main { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; outlin
 .btn svg { width: 18px; height: 18px; fill: currentColor; }
 .icon-btn { border: 0; background: rgba(243,242,248,.1); width: 42px; height: 42px; border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
 .icon-btn.on { background: var(--violet); }
+/* Back button on title pages: stays in the top-left corner while the page scrolls. */
+.back-btn {
+  position: sticky; top: calc(env(safe-area-inset-top, 0px) + 18px); z-index: 20;
+  display: grid; place-items: center; width: 46px; height: 46px; margin: 18px 0 -64px 40px;
+  border: 1px solid rgba(243,242,248,.18); border-radius: 50%; cursor: pointer;
+  color: var(--paper); background: rgba(12,15,31,.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.35); transition: background .15s, transform .15s;
+}
+.back-btn:hover { background: rgba(37,40,66,.9); }
+.back-btn:active { transform: scale(.94); }
+.back-btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+.back-btn svg { width: 22px; height: 22px; }
+@media (max-width: 900px) { .back-btn { margin-left: 18px; } }
 .icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 
 /* Hero: the one loud thing in the app */

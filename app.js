@@ -28,6 +28,7 @@ function h(tag, attrs = {}, ...children) {
 }
 
 const ICON = {
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg>',
   info: '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2zm0-8h-2V7h2z"/></svg>',
   up: '<svg viewBox="0 0 24 24"><path d="M7 10v11H3V10zm2 11V10l5-8c1.7 0 2.6 1.3 2.2 3L15.4 9H20a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18.6 21z"/></svg>',
@@ -77,8 +78,48 @@ function slimItem(item) {
 }
 
 // ---------- router ----------
+// Screens visited this session (current last), and where each one was scrolled when left,
+// so Back returns to the previous screen exactly as it was.
+const navStack = [];
+const screenState = new Map(); // hash -> { top, rows: [scrollLeft per row] }
+let restoring = null; // saved state for the screen being shown, when arriving by Back
+
+function saveScreen(hash) {
+  screenState.set(hash, { top: view.scrollTop, rows: [...view.querySelectorAll('.scroller')].map((s) => s.scrollLeft) });
+}
+
+// Renderers call this once their content is in place.
+function restoreScreen() {
+  const s = restoring;
+  restoring = null;
+  if (!s) return;
+  view.querySelectorAll('.scroller').forEach((el, i) => {
+    if (s.rows[i] == null) return;
+    el.style.scrollBehavior = 'auto';
+    el.scrollLeft = s.rows[i];
+    el.style.scrollBehavior = '';
+  });
+  view.scrollTop = s.top;
+}
+
+function goBack() {
+  if (navStack.length > 1) history.back();
+  else location.hash = '#/';
+}
+
+function backButton() {
+  return h('button', { class: 'back-btn', title: 'Back', 'aria-label': 'Back', html: ICON.back, onclick: goBack });
+}
+
 function route() {
   renderId++;
+  const hash = location.hash || '#/';
+  const prev = navStack[navStack.length - 1];
+  if (prev !== undefined && prev !== hash) saveScreen(prev);
+  const goingBack = navStack.length > 1 && navStack[navStack.length - 2] === hash;
+  if (goingBack) navStack.pop();
+  else if (prev !== hash) navStack.push(hash);
+  restoring = goingBack ? screenState.get(hash) || null : null;
   clearInterval(heroTimer);
   const [, page, type, id] = location.hash.split('/');
   document.querySelectorAll('.rail a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (page || 'home')));
@@ -114,6 +155,7 @@ async function renderHome() {
     h('p', {}, 'To play anything, paste the Torrentio link you were sent into Settings.'),
     h('a', { class: 'btn primary small', href: '#/settings' }, 'Open settings'));
   view.replaceChildren(setup, renderHero(home.hero), h('div', { class: 'rows' }, home.rows.map(renderRow)));
+  restoreScreen();
 }
 
 function renderHero(items) {
@@ -188,6 +230,7 @@ function renderCard(item, wide = false) {
 
 // ---------- search ----------
 let searchSeq = 0;
+const lastSearch = { q: '', items: null }; // kept so Back (or the Search tab) shows the same results
 function renderSearch() {
   const results = h('div', { class: 'grid' });
   const status = h('p', { class: 'empty' }, 'Search movies and shows by title.');
@@ -198,12 +241,14 @@ function renderSearch() {
       clearTimeout(t);
       t = setTimeout(async () => {
         const q = input.value.trim();
-        if (q.length < 2) { results.replaceChildren(); status.textContent = 'Search movies and shows by title.'; return; }
+        if (q.length < 2) { results.replaceChildren(); status.textContent = 'Search movies and shows by title.'; lastSearch.q = ''; lastSearch.items = null; return; }
         status.textContent = 'Searching…';
         const mine = ++searchSeq;
         try {
           const items = await api.search(q);
           if (mine !== searchSeq) return; // a newer search started; drop this stale result
+          lastSearch.q = q;
+          lastSearch.items = items;
           status.textContent = items.length ? '' : `No titles match “${q}”.`;
           results.replaceChildren(...items.map((i) => renderCard(i)));
         } catch (err) {
@@ -214,7 +259,14 @@ function renderSearch() {
     },
   });
   view.replaceChildren(h('div', { class: 'page' }, h('h1', {}, 'Search'), input, status, results));
-  input.focus();
+  if (lastSearch.items) {
+    input.value = lastSearch.q;
+    status.textContent = lastSearch.items.length ? '' : `No titles match “${lastSearch.q}”.`;
+    results.replaceChildren(...lastSearch.items.map((i) => renderCard(i)));
+  }
+  // Coming back to results: keep the place in the list rather than jumping to the box.
+  if (restoring) restoreScreen();
+  else input.focus({ preventScroll: true });
 }
 
 // ---------- details ----------
@@ -222,13 +274,13 @@ async function renderDetails(type, rawId) {
   const rid = renderId;
   const [id, query] = rawId.split('?');
   const wanted = new URLSearchParams(query || '').get('v');
-  view.replaceChildren(h('div', { class: 'page' }, h('div', { class: 'spinner' })));
+  view.replaceChildren(backButton(), h('div', { class: 'page' }, h('div', { class: 'spinner' })));
   let meta;
   try {
     meta = await api.getMeta(type, id);
   } catch (err) {
     if (stale(rid)) return;
-    view.replaceChildren(h('div', { class: 'page' }, h('h1', {}, 'Can’t open this title'), h('p', { class: 'empty' }, err.message)));
+    view.replaceChildren(backButton(), h('div', { class: 'page' }, h('h1', {}, 'Can’t open this title'), h('p', { class: 'empty' }, err.message)));
     return;
   }
   meta.type = meta.type || type;
@@ -256,7 +308,7 @@ async function renderDetails(type, rawId) {
   const page = h('div', {},
     meta.background ? h('div', { class: 'details-bg', style: `background-image:url("${meta.background.replace('/medium/', '/large/')}")` }) : null,
     h('div', { class: 'details' }, posterImg(meta.poster, meta.name), info));
-  view.replaceChildren(page);
+  view.replaceChildren(backButton(), page);
 
   if (meta.type === 'series') {
     const videos = (meta.videos || []).filter((v) => Number(v.season) > 0);
