@@ -23,6 +23,9 @@ const Listen = (() => {
     close: SVG('<path d="M6 6l12 12M18 6 6 18"/>'),
     refresh: SVG('<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>'),
     shuffle: SVG('<path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>'),
+    queue: SVG('<path d="M3 6h13M3 12h13M3 18h8"/><path fill="currentColor" stroke="none" d="M16 15.5v6l5-3z"/>'),
+    plus: SVG('<path d="M12 5v14M5 12h14"/>'),
+    remove: SVG('<path d="M7 7l10 10M17 7 7 17"/>'),
   };
 
   const kindOf = (item) => kinds[item.key] || item.kind;
@@ -51,8 +54,9 @@ const Listen = (() => {
   let coverBusy = 0;
   // A miss is stored as "miss:<time>" and tried again a day later (catalogs change, lookups improve).
   const MISS_RETRY_MS = 24 * 3600 * 1000;
+  const coverKey = (item) => `${item.key}|${item.artist}|${item.title}`; // a renamed item gets looked up again
   function coverFor(item, img) {
-    const known = covers[item.key];
+    const known = covers[coverKey(item)];
     if (known && !known.startsWith('miss:')) { img.src = known; return; }
     if (known && Date.now() - Number(known.slice(5)) < MISS_RETRY_MS) return;
     coverQueue.push([item, img]);
@@ -63,7 +67,7 @@ const Listen = (() => {
       const [item, img] = coverQueue.shift();
       coverBusy++;
       lookupCover(item)
-        .then((url) => { covers[item.key] = url || `miss:${Date.now()}`; save('covers2', covers); if (url) img.src = url; })
+        .then((url) => { covers[coverKey(item)] = url || `miss:${Date.now()}`; save('covers2', covers); if (url) img.src = url; })
         .catch(() => {})
         .finally(() => { coverBusy--; pumpCovers(); });
     }
@@ -158,10 +162,47 @@ const Listen = (() => {
       : null;
     view.replaceChildren(h('div', { class: 'page' },
       h('h1', {}, 'Music & Audiobooks'),
+      continueRow(all),
+      downloadingStrip(data.downloading || []),
       h('div', { class: 'atools' }, seg, filter, refresh),
       empty, grid));
     fill();
     restoreScreen();
+  }
+
+  // Albums and audiobooks you were partway through, most recent first. A tap picks up where you left off.
+  function continueRow(all) {
+    const started = all
+      .map((item) => ({ item, p: progress[item.key] }))
+      .filter(({ item, p }) => p && !p.done && item.tracks[p.track] && (p.track > 0 || p.pos > 15))
+      .sort((a, b) => b.p.at - a.p.at)
+      .slice(0, 12);
+    if (!started.length) return null;
+    return h('section', { class: 'acontinue' },
+      h('h2', {}, 'Continue listening'),
+      h('div', { class: 'acont-row' }, started.map(({ item, p }) => {
+        const book = kindOf(item) === 'audiobook';
+        const pct = Math.min(1, (p.track + (p.dur ? p.pos / p.dur : 0)) / item.tracks.length);
+        const where = book ? `${item.tracks[p.track].title} · ${fmt(p.pos)}` : `Track ${p.track + 1} · ${item.tracks[p.track].title}`;
+        return h('button', { class: 'acont', title: `Resume ${item.title}`, onclick: () => playAlbum(item, p.track, p.pos) },
+          h('div', { class: 'acard-art' }, coverEl(item),
+            h('span', { class: 'acont-play', html: IC.play }),
+            h('div', { class: 'bar' }, h('i', { style: `width:${Math.max(3, Math.round(pct * 100))}%` }))),
+          h('div', { class: 'name' }, item.title),
+          h('div', { class: 'why' }, where));
+      })));
+  }
+
+  // Music and audiobooks TorBox is still fetching: they have no files to list until it finishes.
+  function downloadingStrip(list) {
+    if (!list.length) return null;
+    return h('section', { class: 'adownloading' },
+      h('h2', {}, 'Downloading on TorBox'),
+      h('ul', {}, list.map((d) => h('li', {},
+        h('span', { class: 'dl-name', title: d.name }, d.title || d.name),
+        h('span', { class: 'dl-bar' }, h('i', { style: `width:${Math.round(d.progress * 100)}%` })),
+        h('span', { class: 'dl-pct' }, d.progress > 0 ? `${Math.round(d.progress * 100)}%` : 'Starting')))),
+      h('p', { class: 'note' }, 'They appear in your library when TorBox finishes. Use refresh to check.'));
   }
 
   function card(item) {
@@ -201,11 +242,13 @@ const Listen = (() => {
     const resumeLabel = book && p && (p.track > 0 || p.pos > 30)
       ? `Resume · ${item.tracks[p.track]?.title || `Part ${p.track + 1}`} · ${fmt(p.pos)}` : null;
     const actions = h('div', { class: 'actions' },
-      h('button', { class: 'btn primary', onclick: () => (resumeLabel ? play(item, p.track, p.pos) : play(item, 0, 0)) },
+      h('button', { class: 'btn primary', onclick: () => (resumeLabel ? playAlbum(item, p.track, p.pos) : playAlbum(item, 0, 0)) },
         h('span', { html: IC.play, class: 'ico' }), resumeLabel || 'Play'),
-      resumeLabel ? h('button', { class: 'btn ghost small', onclick: () => play(item, 0, 0) }, 'Start over') : null,
-      !book && item.tracks.length > 1 ? h('button', { class: 'btn ghost small', onclick: () => play(item, Math.floor(Math.random() * item.tracks.length), 0, true) },
+      resumeLabel ? h('button', { class: 'btn ghost small', onclick: () => playAlbum(item, 0, 0) }, 'Start over') : null,
+      !book && item.tracks.length > 1 ? h('button', { class: 'btn ghost small', onclick: () => playAlbum(item, Math.floor(Math.random() * item.tracks.length), 0, true) },
         h('span', { html: IC.shuffle, class: 'ico' }), 'Shuffle') : null,
+      h('button', { class: 'btn ghost small', onclick: () => addToQueue(item, item.tracks.map((_t, i) => i)) },
+        h('span', { html: IC.queue, class: 'ico' }), 'Add to queue'),
       h('button', { class: 'btn ghost small', onclick: () => {
         kinds[item.key] = book ? 'music' : 'audiobook';
         save('audioKind', kinds);
@@ -214,10 +257,11 @@ const Listen = (() => {
       } }, book ? 'Move to Music' : 'Move to Audiobooks'));
     const list = h('ol', { class: 'tracks' }, item.tracks.map((t, i) =>
       h('li', {},
-        h('button', { class: `track${isCurrent(item, i) ? ' on' : ''}`, 'data-i': i, onclick: () => play(item, i, book && p && p.track === i ? p.pos : 0) },
+        h('button', { class: `track${isCurrent(item, i) ? ' on' : ''}`, 'data-i': i, onclick: () => playAlbum(item, i, book && p && p.track === i ? p.pos : 0) },
           h('span', { class: 'tn' }, String(i + 1)),
           h('span', { class: 'tt' }, t.title),
-          h('span', { class: 'tx' }, t.ext.toUpperCase())))));
+          h('span', { class: 'tx' }, t.ext.toUpperCase())),
+        h('button', { class: 'tq', title: 'Add to queue', 'aria-label': `Add ${t.title} to queue`, html: IC.plus, onclick: () => addToQueue(item, [i]) }))));
     view.replaceChildren(backButton(), h('div', { class: 'page album' },
       h('div', { class: 'album-head' }, coverEl(item, 'acover big'),
         h('div', {},
@@ -230,12 +274,16 @@ const Listen = (() => {
   }
 
   // ---------- player ----------
+  // Everything plays from a queue of { item, i } (an album/audiobook and a track in it). Playing an
+  // album fills the queue with the rest of that album; "Add to queue" appends without interrupting.
   const audio = document.createElement('audio');
   audio.preload = 'auto';
-  let cur = null; // { item, i }
+  let queue = [];
+  let qi = -1;
+  let cur = null; // queue[qi]
   let bar = null;
   let ui = {};
-  let shuffle = false;
+  let panel = null; // the queue list, when open
   let lastSave = 0;
   const speeds = [1, 1.25, 1.5, 1.75, 2, 0.75];
 
@@ -251,6 +299,8 @@ const Listen = (() => {
     ui.back = btn('skip', 'Back 30 seconds', IC.back30, () => seekBy(-30));
     ui.fwd = btn('skip', 'Forward 30 seconds', IC.fwd30, () => seekBy(30));
     ui.speed = h('button', { class: 'pbtn speed', title: 'Speed', 'aria-label': 'Playback speed', onclick: cycleSpeed }, '1×');
+    ui.queueBtn = h('button', { class: 'pbtn qbtn', title: 'Queue', 'aria-label': 'Show queue', 'aria-expanded': 'false', html: IC.queue, onclick: toggleQueue },
+      ui.qcount = h('span', { class: 'qcount' }));
     ui.seek = h('input', { type: 'range', class: 'lb-seek', min: 0, max: 1000, value: 0, 'aria-label': 'Position',
       oninput: () => { if (audio.duration) audio.currentTime = (ui.seek.value / 1000) * audio.duration; } });
     ui.time = h('span', { class: 'lb-time' }, '0:00');
@@ -261,16 +311,39 @@ const Listen = (() => {
       h('div', { class: 'lb-center' },
         h('div', { class: 'lb-buttons' }, ui.back, btn('', 'Previous', IC.prev, prev), ui.play, btn('', 'Next', IC.next, next), ui.fwd),
         h('div', { class: 'lb-progress' }, ui.time, ui.seek, ui.dur)),
-      h('div', { class: 'lb-right' }, ui.speed, btn('', 'Close player', IC.close, stop)));
+      h('div', { class: 'lb-right' }, ui.speed, ui.queueBtn, btn('', 'Close player', IC.close, stop)));
     document.body.append(bar);
   }
 
-  async function play(item, i, startAt = 0, shuffled = false) {
+  // Play an album or audiobook from track i: the queue becomes the rest of it (or all of it, shuffled).
+  function playAlbum(item, i, startAt = 0, shuffled = false) {
     if (!item.tracks[i]) return;
-    shuffle = shuffled || (shuffle && cur && cur.item.key === item.key);
+    let order = item.tracks.map((_t, k) => k).slice(i);
+    if (shuffled) {
+      order = item.tracks.map((_t, k) => k).filter((k) => k !== i);
+      for (let k = order.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [order[k], order[j]] = [order[j], order[k]]; }
+      order.unshift(i);
+    }
+    queue = order.map((k) => ({ item, i: k }));
+    qi = 0;
+    start(startAt);
+  }
+
+  function addToQueue(item, indices) {
+    const idle = !cur;
+    queue.push(...indices.map((i) => ({ item, i })));
+    if (idle) { qi = queue.length - indices.length; start(0); }
+    toast(indices.length === 1 ? `Added “${item.tracks[indices[0]].title}” to the queue.` : `Added ${indices.length} tracks to the queue.`, 2500);
+    refreshQueue();
+  }
+
+  async function start(startAt = 0) {
+    const entry = queue[qi];
+    if (!entry) return;
+    const { item, i } = entry;
     buildBar();
     savePos();
-    cur = { item, i };
+    cur = entry;
     const t = item.tracks[i];
     const book = kindOf(item) === 'audiobook';
     bar.classList.toggle('book', book);
@@ -280,9 +353,10 @@ const Listen = (() => {
     ui.art.replaceChildren(coverEl(item, 'acover tiny'));
     ui.seek.value = 0; ui.time.textContent = '0:00'; ui.dur.textContent = '';
     markTracks();
+    refreshQueue();
     try {
       const url = await api.audioUrl(item.source, item.id, t.fileId);
-      if (!cur || cur.item !== item || cur.i !== i) return; // another track was picked meanwhile
+      if (cur !== entry) return; // another track was picked meanwhile
       audio.src = url;
       audio.playbackRate = book ? load('listenSpeed', 1) : 1;
       ui.speed.textContent = `${audio.playbackRate}×`;
@@ -296,15 +370,28 @@ const Listen = (() => {
   }
 
   function next() {
-    if (!cur) return;
-    const n = cur.item.tracks.length;
-    const j = shuffle ? Math.floor(Math.random() * n) : cur.i + 1;
-    if (j < n) play(cur.item, j, 0);
+    if (qi + 1 < queue.length) { qi++; start(0); }
   }
   function prev() {
     if (!cur) return;
-    if (audio.currentTime > 5 || cur.i === 0) { audio.currentTime = 0; return; }
-    play(cur.item, cur.i - 1, 0);
+    if (audio.currentTime > 5 || qi === 0) { audio.currentTime = 0; return; }
+    qi--;
+    start(0);
+  }
+  function jumpTo(k) {
+    if (!queue[k]) return;
+    qi = k;
+    start(0);
+  }
+  function removeAt(k) {
+    if (k === qi || !queue[k]) return;
+    queue.splice(k, 1);
+    if (k < qi) qi--;
+    refreshQueue();
+  }
+  function clearUpNext() {
+    queue = queue.slice(0, qi + 1);
+    refreshQueue();
   }
   function seekBy(s) {
     if (audio.duration) audio.currentTime = Math.max(0, Math.min(audio.duration - 1, audio.currentTime + s));
@@ -321,9 +408,49 @@ const Listen = (() => {
     audio.removeAttribute('src');
     audio.load();
     cur = null;
+    queue = [];
+    qi = -1;
+    closeQueue();
     document.body.classList.remove('listening');
     if (bar) { bar.remove(); bar = null; ui = {}; }
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
+  }
+
+  // ---------- queue panel ----------
+  function toggleQueue() { if (panel) closeQueue(); else openQueue(); }
+  function openQueue() {
+    panel = h('div', { class: 'queue-panel', role: 'dialog', 'aria-label': 'Queue' });
+    document.body.append(panel);
+    if (ui.queueBtn) { ui.queueBtn.classList.add('on'); ui.queueBtn.setAttribute('aria-expanded', 'true'); }
+    refreshQueue();
+  }
+  function closeQueue() {
+    if (panel) { panel.remove(); panel = null; }
+    if (ui.queueBtn) { ui.queueBtn.classList.remove('on'); ui.queueBtn.setAttribute('aria-expanded', 'false'); }
+  }
+  function refreshQueue() {
+    const upNext = Math.max(0, queue.length - qi - 1);
+    if (ui.qcount) ui.qcount.textContent = upNext ? String(upNext) : '';
+    if (!panel) return;
+    const row = (entry, k) => {
+      const t = entry.item.tracks[entry.i];
+      return h('li', { class: k === qi ? 'now' : '' },
+        h('button', { class: 'q-item', onclick: () => jumpTo(k), title: k === qi ? 'Playing now' : 'Play this now' },
+          coverEl(entry.item, 'acover tiny'),
+          h('span', { class: 'q-text' }, h('span', { class: 'q-title' }, t.title), h('span', { class: 'q-sub' }, entry.item.title))),
+        k === qi ? h('span', { class: 'q-now' }, 'Now') : h('button', { class: 'q-x', title: 'Remove', 'aria-label': `Remove ${t.title}`, html: IC.remove, onclick: () => removeAt(k) }));
+    };
+    const rest = queue.slice(qi + 1);
+    panel.replaceChildren(
+      h('div', { class: 'q-head' }, h('h3', {}, 'Queue'),
+        rest.length ? h('button', { class: 'btn ghost small', onclick: clearUpNext }, 'Clear up next') : null,
+        h('button', { class: 'pbtn', title: 'Close', 'aria-label': 'Close queue', html: IC.close, onclick: closeQueue })),
+      cur ? h('p', { class: 'q-label' }, 'Now playing') : null,
+      cur ? h('ul', { class: 'q-list' }, row(cur, qi)) : null,
+      h('p', { class: 'q-label' }, rest.length ? `Up next · ${rest.length}` : 'Up next'),
+      rest.length
+        ? h('ul', { class: 'q-list' }, rest.map((e, n) => row(e, qi + 1 + n)))
+        : h('p', { class: 'note' }, 'Nothing queued. Use + next to a track, or “Add to queue” on an album.'));
   }
 
   // Remember where each audiobook (and album) was left, per device.
@@ -348,9 +475,12 @@ const Listen = (() => {
   audio.addEventListener('pause', () => { if (ui.play) { ui.play.innerHTML = IC.play; ui.play.title = 'Play'; } savePos(); });
   audio.addEventListener('ended', () => {
     if (!cur) return;
-    const last = cur.i === cur.item.tracks.length - 1 && !shuffle;
-    if (last) { progress[cur.item.key] = { track: 0, pos: 0, dur: 0, at: Date.now(), done: true }; save('listen', progress); return; }
-    next();
+    // Finished the last track of an album/book: it leaves Continue listening.
+    if (cur.i === cur.item.tracks.length - 1) {
+      progress[cur.item.key] = { track: 0, pos: 0, dur: 0, at: Date.now(), done: true };
+      save('listen', progress);
+    }
+    if (qi + 1 < queue.length) { qi++; start(0); }
   });
   audio.addEventListener('error', () => {
     if (!cur || !audio.getAttribute('src')) return;
@@ -360,11 +490,12 @@ const Listen = (() => {
   document.addEventListener('play', (e) => { if (e.target instanceof HTMLVideoElement) audio.pause(); }, true);
   window.addEventListener('pagehide', savePos);
   window.addEventListener('hashchange', markTracks);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && panel) closeQueue(); });
 
   // Lock screen / Control Center / media keys.
   function setMediaSession(item, t) {
     if (!('mediaSession' in navigator)) return;
-    const art = covers[item.key];
+    const art = covers[coverKey(item)];
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title, artist: item.artist || '', album: item.title,
       artwork: art ? [{ src: art, sizes: '600x600', type: 'image/jpeg' }] : [],
@@ -379,7 +510,7 @@ const Listen = (() => {
     on('seekto', (d) => { if (Number.isFinite(d.seekTime)) audio.currentTime = d.seekTime; });
   }
 
-  return { renderLibrary, renderAlbum, play, stop, audio };
+  return { renderLibrary, renderAlbum, playAlbum, addToQueue, stop, audio, queue: () => queue.map((e) => `${e.item.title} / ${e.item.tracks[e.i].title}`), qi: () => qi };
 })();
 
 // eslint-disable-next-line no-unused-vars
