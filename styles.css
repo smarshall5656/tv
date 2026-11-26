@@ -397,3 +397,24 @@ body.listening main { padding-bottom: 104px; }
   .queue-panel { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); right: 12px; }
   .adownloading li { grid-template-columns: minmax(0, 1fr) 90px 54px; }
 }
+
+/* Find music & audiobooks */
+.atools .afind { margin-left: auto; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.seg button { padding: 8px 18px; border: 0; border-radius: 999px; background: none; color: var(--mist); font: 600 14px/1.2 inherit; font-family: inherit; cursor: pointer; white-space: nowrap; }
+.seg button.on { background: var(--paper); color: var(--ink); }
+.find .seg { margin: 6px 0 16px; }
+.find-form { display: flex; gap: 10px; max-width: 760px; margin-bottom: 6px; }
+.find-form .search-box { flex: 1; margin: 0; }
+.found { list-style: none; margin: 14px 0 0; padding: 0; max-width: 980px; display: grid; gap: 8px; }
+.found-row { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 14px; background: var(--dusk); }
+.found-main { flex: 1; min-width: 0; }
+.found-title { font-weight: 600; overflow-wrap: anywhere; }
+.found-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; font-size: 13px; color: var(--mist); }
+.chip { padding: 2px 9px; border-radius: 999px; background: rgba(243,242,248,.1); color: var(--paper); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.chip.ready { background: rgba(63,214,198,.18); color: var(--teal); }
+.found-note { color: var(--teal); font-weight: 600; }
+.found-row .btn { flex: none; min-width: 84px; justify-content: center; }
+@media (max-width: 860px) {
+  .atools .afind { margin-left: 0; }
+  .found-row { align-items: flex-start; }
+}

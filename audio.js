@@ -41,9 +41,14 @@ const Listen = (() => {
 
   // ---------- library ----------
   let libCache = null; // { at, data }
+  // Torrents added from the Find page in the last 15 minutes. TorBox's full list takes about 4 minutes to
+  // include new things, so these are looked up by id until it does.
+  const RECENT_MS = 15 * 60 * 1000;
+  const recentIds = () => load('recentAdds', []).filter((r) => Date.now() - r.at < RECENT_MS).map((r) => r.id);
+  const rememberAdd = (id) => { if (id) save('recentAdds', [...load('recentAdds', []).filter((r) => Date.now() - r.at < RECENT_MS), { id, at: Date.now() }]); };
   async function getLibrary(force = false) {
     if (!force && libCache && Date.now() - libCache.at < 60000) return libCache.data;
-    const data = await api.getAudioLibrary();
+    const data = await api.getAudioLibrary(force, recentIds());
     // "Not set up yet" isn't worth remembering: the next visit after Settings should see the library.
     libCache = data.needsKey || data.needsRelay ? null : { at: Date.now(), data };
     return data;
@@ -113,18 +118,20 @@ const Listen = (() => {
 
   // ---------- library page ----------
   let filterText = '';
-  async function renderLibrary(tab) {
+  async function renderLibrary(tab, fresh = false) {
+    if (tab === 'find') return renderFind();
+    if (freshNext) { fresh = true; freshNext = false; }
     const rid = renderId;
     const books = tab === 'books';
     view.replaceChildren(h('div', { class: 'page' }, h('h1', {}, 'Music & Audiobooks'), h('div', { class: 'spinner' })));
     let data;
     try {
-      data = await getLibrary();
+      data = await getLibrary(fresh);
     } catch (err) {
       if (stale(rid)) return;
       view.replaceChildren(h('div', { class: 'page' }, h('h1', {}, 'Music & Audiobooks'),
         h('p', { class: 'empty' }, `Couldn’t load your library: ${err.message}`),
-        h('button', { class: 'btn primary', onclick: () => { libCache = null; renderLibrary(tab); } }, 'Try again')));
+        h('button', { class: 'btn primary', onclick: () => renderLibrary(tab, true) }, 'Try again')));
       return;
     }
     if (stale(rid)) return;
@@ -154,7 +161,7 @@ const Listen = (() => {
       oninput: () => { filterText = filter.value.trim(); fill(); },
     });
     const refresh = h('button', { class: 'icon-btn', title: 'Refresh', 'aria-label': 'Refresh', html: IC.refresh,
-      onclick: () => { libCache = null; renderLibrary(tab); } });
+      onclick: () => { toast('Checking TorBox. Things added in Debrid Vault can take about 5 minutes to show up here.', 3500); renderLibrary(tab, true); } });
     const empty = !(books ? bookList : music).length
       ? h('div', { class: 'aempty' },
         h('p', {}, books ? 'No audiobooks in your TorBox yet.' : 'No music in your TorBox yet.'),
@@ -164,7 +171,9 @@ const Listen = (() => {
       h('h1', {}, 'Music & Audiobooks'),
       continueRow(all),
       downloadingStrip(data.downloading || []),
-      h('div', { class: 'atools' }, seg, filter, refresh),
+      h('div', { class: 'atools' }, seg, filter, refresh,
+        h('a', { class: 'btn primary small afind', href: '#/audio/find', onclick: () => { lastFind.kind = books ? 'book' : 'music'; } },
+          h('span', { class: 'ico', html: IC.plus }), 'Find music & audiobooks')),
       empty, grid));
     fill();
     restoreScreen();
@@ -216,6 +225,91 @@ const Listen = (() => {
         pct > 0 ? h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(pct * 100)}%` })) : null),
       h('div', { class: 'name' }, item.title),
       h('div', { class: 'why' }, sub));
+  }
+
+  // ---------- find & add ----------
+  // Searches public indexes (through the app or the relay) and adds picks to TorBox.
+  const lastFind = { q: '', kind: 'music', results: null, added: {} };
+  let freshNext = false; // after adding something, the next library visit asks TorBox for a fresh list
+  const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+
+  function renderFind() {
+    const status = h('p', { class: 'note', role: 'status' });
+    const list = h('ul', { class: 'found' });
+    const input = h('input', { class: 'search-box', type: 'search', value: lastFind.q, 'aria-label': 'Search',
+      placeholder: lastFind.kind === 'book' ? 'Book title or author' : 'Artist or album' });
+    const segBtn = (kind, label) => h('button', { type: 'button', class: lastFind.kind === kind ? 'on' : '', role: 'tab', 'aria-selected': String(lastFind.kind === kind),
+      onclick: () => { if (lastFind.kind === kind) return; lastFind.kind = kind; lastFind.results = null; renderFind(); if (lastFind.q) run(); } }, label);
+    const form = h('form', { class: 'find-form', onsubmit: (e) => { e.preventDefault(); run(); } },
+      input, h('button', { class: 'btn primary', type: 'submit' }, 'Search'));
+    let seq = 0;
+    async function run() {
+      const q = input.value.trim();
+      if (q.length < 2) { status.textContent = 'Type at least two letters.'; return; }
+      lastFind.q = q;
+      const mine = ++seq;
+      status.textContent = 'Searching…';
+      list.replaceChildren();
+      try {
+        const { results, errors } = await api.searchAudio(q, lastFind.kind);
+        if (mine !== seq) return;
+        lastFind.results = results;
+        paint(errors);
+      } catch (err) {
+        if (mine !== seq) return;
+        status.textContent = `Search failed: ${err.message}`;
+      }
+    }
+    function paint(errors = []) {
+      const results = lastFind.results || [];
+      const ready = results.filter((r) => r.ready).length;
+      status.textContent = errors.length ? 'The search sites didn’t answer. Try again in a minute.'
+        : !results.length ? `Nothing found for “${lastFind.q}”. Try fewer words, or just the ${lastFind.kind === 'book' ? 'title' : 'artist'}.`
+          : `${results.length} found · ${ready} ready to play right away`;
+      list.replaceChildren(...results.map(row));
+    }
+    function row(r) {
+      const done = lastFind.added[r.hash];
+      const btn = h('button', { class: `btn small ${done ? 'ghost' : 'primary'}`, disabled: Boolean(done) }, done ? 'Added' : 'Add');
+      const note = h('span', { class: 'found-note' }, done || '');
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = 'Adding…';
+        try {
+          const added = await api.addAudio(r.hash, r.title);
+          rememberAdd(added && added.torrentId);
+          const msg = r.ready ? 'In your library now' : 'TorBox is downloading it';
+          lastFind.added[r.hash] = msg;
+          btn.textContent = 'Added';
+          btn.className = 'btn small ghost';
+          note.textContent = msg;
+          libCache = null;
+          freshNext = true;
+          toast(r.ready ? 'Added. It’s in your Music tab now.' : 'Added. TorBox is downloading it; it shows under “Downloading on TorBox” until it’s done.', 3500);
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = 'Add';
+          toast(`Couldn’t add it: ${err.message}`);
+        }
+      };
+      return h('li', { class: 'found-row' },
+        h('div', { class: 'found-main' },
+          h('div', { class: 'found-title' }, r.title),
+          h('div', { class: 'found-meta' },
+            r.ready ? h('span', { class: 'chip ready' }, 'Ready') : h('span', { class: 'chip' }, 'Needs download'),
+            r.format ? h('span', { class: 'chip' }, r.format) : null,
+            r.size ? h('span', {}, size(r.size)) : null,
+            h('span', {}, `${r.seeders} sharing`),
+            note)),
+        btn);
+    }
+    view.replaceChildren(backButton(), h('div', { class: 'page find' },
+      h('h1', {}, 'Find music & audiobooks'),
+      h('p', { class: 'note' }, 'Searches public download sites and adds what you pick to your TorBox. “Ready” ones are already on TorBox and play right away; others take a while to download first.'),
+      h('div', { class: 'seg', role: 'tablist' }, segBtn('music', 'Music'), segBtn('book', 'Audiobooks')),
+      form, status, list));
+    if (lastFind.results) paint();
+    if (restoring) restoreScreen(); else input.focus({ preventScroll: true });
   }
 
   // ---------- album page ----------

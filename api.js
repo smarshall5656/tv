@@ -180,14 +180,36 @@ const api = {
     const { items } = await this.getAudioLibrary();
     return { music: items.filter((i) => i.kind === 'music').length, books: items.filter((i) => i.kind === 'audiobook').length };
   },
-  async getAudioLibrary() {
+  // fresh: the refresh button (skip caches). recentIds: torrents added here lately, which TorBox's
+  // full list takes a few minutes to include, so the relay looks them up directly.
+  async getAudioLibrary(fresh = false, recentIds = []) {
     const base = relayBase(settings.get('relay'));
     if (!base) return { items: [], needsRelay: true };
-    const res = await fetch(`${base}/library`).catch(() => null);
+    const q = new URLSearchParams();
+    if (fresh) q.set('fresh', '1');
+    if (recentIds.length) q.set('ids', recentIds.join(','));
+    const res = await fetch(`${base}/library${q.toString() ? `?${q}` : ''}`).catch(() => null);
     if (!res) throw new Error('The music library link didn’t respond. Check your internet connection.');
     if (res.status === 404) throw new Error('The music library link isn’t right any more. Ask for a new one.');
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || `The music library answered ${res.status}.`);
+    return body;
+  },
+  async searchAudio(query, kind) {
+    const base = relayBase(settings.get('relay'));
+    if (!base) throw new Error('Paste the music library link in Settings first.');
+    const res = await fetch(`${base}/search?${new URLSearchParams({ q: query, kind })}`).catch(() => null);
+    if (!res) throw new Error('The music library link didn’t respond. Check your internet connection.');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `The search answered ${res.status}.`);
+    return body;
+  },
+  async addAudio(hash, title) {
+    const base = relayBase(settings.get('relay'));
+    const res = await fetch(`${base}/add`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash, title }) }).catch(() => null);
+    if (!res) throw new Error('The music library link didn’t respond.');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Adding failed (${res.status}).`);
     return body;
   },
   // The relay answers with a redirect to a fresh TorBox link, so this address works straight in <audio>.
