@@ -7,7 +7,8 @@ const Listen = (() => {
   // ---------- small storage helpers (per device) ----------
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(`tbs.${k}`)) ?? d; } catch { return d; } };
   const save = (k, v) => { try { localStorage.setItem(`tbs.${k}`, JSON.stringify(v)); } catch { /* storage blocked */ } };
-  const covers = load('covers', {}); // album key -> artwork URL ('' = none found)
+  // album key -> artwork URL, or "miss:<time>". Versioned key: covers saved by older, looser matching are dropped.
+  const covers = load('covers2', {});
   const progress = load('listen', {}); // album key -> { track, pos, at }
   const kinds = load('audioKind', {}); // album key -> 'music' | 'audiobook' (user's own choice)
 
@@ -48,10 +49,12 @@ const Listen = (() => {
   // ---------- covers (Apple's free iTunes search; works from the iPad page too) ----------
   const coverQueue = [];
   let coverBusy = 0;
+  // A miss is stored as "miss:<time>" and tried again a day later (catalogs change, lookups improve).
+  const MISS_RETRY_MS = 24 * 3600 * 1000;
   function coverFor(item, img) {
     const known = covers[item.key];
-    if (known) { img.src = known; return; }
-    if (known === '') return;
+    if (known && !known.startsWith('miss:')) { img.src = known; return; }
+    if (known && Date.now() - Number(known.slice(5)) < MISS_RETRY_MS) return;
     coverQueue.push([item, img]);
     pumpCovers();
   }
@@ -60,22 +63,33 @@ const Listen = (() => {
       const [item, img] = coverQueue.shift();
       coverBusy++;
       lookupCover(item)
-        .then((url) => { covers[item.key] = url; save('covers', covers); if (url) img.src = url; })
+        .then((url) => { covers[item.key] = url || `miss:${Date.now()}`; save('covers2', covers); if (url) img.src = url; })
         .catch(() => {})
         .finally(() => { coverBusy--; pumpCovers(); });
     }
   }
+  async function itunes(params) {
+    const res = await fetch(`https://itunes.apple.com/search?limit=10&${new URLSearchParams(params)}`);
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()).results || [];
+  }
+  // Apple always returns *something*; only take a cover whose album title really matches ours, and
+  // with a known artist the artist must match too (avoids cover versions and tribute albums).
+  const matches = (item) => (r) => sameTitle(item.title, r.collectionName) && (!item.artist || sameTitle(item.artist, r.artistName));
+  const big = (r) => (r && r.artworkUrl100 ? r.artworkUrl100.replace('100x100bb', '600x600bb') : '');
   async function lookupCover(item) {
     const book = kindOf(item) === 'audiobook';
     const term = `${item.artist} ${item.title}`.replace(/\b(unabridged|abridged|audiobook)\b/gi, '').trim();
-    const url = `https://itunes.apple.com/search?media=${book ? 'audiobook' : 'music'}&entity=${book ? 'audiobook' : 'album'}&limit=10&term=${encodeURIComponent(term)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(String(res.status));
-    // Apple always returns *something*; only take a cover whose title really matches ours.
-    // With a known artist, the artist must match too (avoids cover versions and tribute albums).
-    const hit = ((await res.json()).results || []).find((r) => sameTitle(item.title, r.collectionName)
-      && (!item.artist || sameTitle(item.artist, r.artistName)));
-    return hit && hit.artworkUrl100 ? hit.artworkUrl100.replace('100x100bb', '600x600bb') : '';
+    if (book) return big((await itunes({ media: 'audiobook', entity: 'audiobook', term })).find(matches(item)));
+    const album = (await itunes({ media: 'music', entity: 'album', term })).find(matches(item));
+    if (album) return big(album);
+    // Some albums never come up in Apple's album search (Frank Ocean's "Blonde"), but their songs do,
+    // each carrying its album's name and cover. Try a couple of this album's own tracks.
+    for (const t of item.tracks.slice(0, 2)) {
+      const song = (await itunes({ media: 'music', entity: 'song', term: `${item.artist} ${t.title}`.trim() })).find(matches(item));
+      if (song) return big(song);
+    }
+    return '';
   }
   const words = (s) => String(s || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]+/g) || [];
   function sameTitle(ours, theirs) {
