@@ -122,9 +122,11 @@ function route() {
   restoring = goingBack ? screenState.get(hash) || null : null;
   clearInterval(heroTimer);
   const [, page, type, id] = location.hash.split('/');
-  document.querySelectorAll('.rail a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (page || 'home')));
+  document.querySelectorAll('.rail a').forEach((a) => a.classList.toggle('active', a.dataset.nav === ({ album: 'audio' }[page] || page || 'home')));
   view.scrollTop = 0;
   if (page === 'search') return renderSearch();
+  if (page === 'audio') return renderAudio(type);
+  if (page === 'album') return renderAlbum(decodeURIComponent(type));
   if (page === 'settings') return renderSettings();
   if (page === 'title') return renderDetails(type, decodeURIComponent(id));
   return renderHome();
@@ -489,6 +491,22 @@ async function renderSettings() {
     }
   };
 
+  const relayInput = h('input', { id: 'relay-link', type: 'url', placeholder: 'https://torbox-music-relay.…workers.dev/…', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const relayNote = h('span', { class: 'note' }, s.hasRelay ? `Saved: ${s.relay}` : 'No link saved yet.');
+  const saveRelay = async () => {
+    relayNote.className = 'note';
+    try {
+      const masked = await api.setRelay(relayInput.value);
+      relayInput.value = '';
+      relayNote.textContent = `Saved: ${masked}. Checking it…`;
+      const r = await api.testRelay();
+      relayNote.textContent = `Working. ${r.music} music and ${r.books} audiobook ${r.books === 1 ? 'title' : 'titles'} found.`;
+    } catch (err) {
+      relayNote.textContent = err.message;
+      relayNote.className = 'note err';
+    }
+  };
+
   view.replaceChildren(h('div', { class: 'page' },
     h('h1', {}, 'Settings'),
     h('div', { class: 'field' },
@@ -496,6 +514,11 @@ async function renderSettings() {
       h('p', {}, 'Paste the Torrentio link you were sent. It connects this page to TorBox and is kept only in Safari on this iPad.'),
       input,
       h('div', { class: 'inline' }, h('button', { class: 'btn primary small', onclick: save }, 'Save and test'), note)),
+    h('div', { class: 'field' },
+      h('label', { for: 'relay-link' }, 'Music & Audiobooks link'),
+      h('p', {}, 'Paste the music library link you were sent. It lets this page list the music and audiobooks in TorBox. Kept only in Safari on this iPad.'),
+      relayInput,
+      h('div', { class: 'inline' }, h('button', { class: 'btn primary small', onclick: saveRelay }, 'Save and test'), relayNote)),
     h('div', { class: 'field' },
       h('label', {}, 'Player'),
       h('p', {}, 'Videos play in VLC, a free app.'),

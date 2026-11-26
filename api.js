@@ -23,7 +23,7 @@ function makeStore(name, defaults) {
   };
 }
 
-const settings = makeStore('settings', { torrentio: '' });
+const settings = makeStore('settings', { torrentio: '', relay: '' });
 const state = makeStore('state', { taste: {}, likes: {}, watched: {} });
 
 // "https://torrentio.strem.fun/torbox=…/manifest.json" (or stremio://…, or …/configure) → its base URL.
@@ -129,9 +129,23 @@ function probeStream(url, timeoutMs = 10000) {
   });
 }
 
+// The music relay link: "https://torbox-music-relay.<name>.workers.dev/<code>" (anything after the code is dropped).
+function relayBase(link) {
+  let u;
+  try { u = new URL(String(link || '').trim()); } catch { return null; }
+  if (u.protocol !== 'https:' && u.hostname !== '127.0.0.1') return null; // plain http only for a local test relay
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (!parts.length || parts[0].length < 16) return null;
+  return `${u.origin}/${parts[0]}`;
+}
+const maskRelay = (link) => { const b = relayBase(link); return b ? b.replace(/\/([^/]+)$/, (_m, c) => `/••••${c.slice(-4)}`) : ''; };
+
 // eslint-disable-next-line no-unused-vars
 const api = {
-  getSettings: async () => ({ torrentio: maskLink(settings.get('torrentio')), hasTorrentio: Boolean(torrentioBase(settings.get('torrentio'))) }),
+  getSettings: async () => ({
+    torrentio: maskLink(settings.get('torrentio')), hasTorrentio: Boolean(torrentioBase(settings.get('torrentio'))),
+    relay: maskRelay(settings.get('relay')), hasRelay: Boolean(relayBase(settings.get('relay'))),
+  }),
   async setTorrentio(link) {
     if (!torrentioBase(link)) throw new Error('That isn’t a Torrentio link set up for TorBox. It should start with https://torrentio.strem.fun/torbox=');
     settings.set({ torrentio: link.trim() });
@@ -155,6 +169,29 @@ const api = {
     return home;
   },
   search: (q) => Cinemeta.search(q),
+
+  // ---------- Music & Audiobooks (through the relay; TorBox itself refuses this page) ----------
+  async setRelay(link) {
+    if (!relayBase(link)) throw new Error('That isn’t a music library link. It should look like https://torbox-music-relay.…workers.dev/…');
+    settings.set({ relay: link.trim() });
+    return maskRelay(link);
+  },
+  async testRelay() {
+    const { items } = await this.getAudioLibrary();
+    return { music: items.filter((i) => i.kind === 'music').length, books: items.filter((i) => i.kind === 'audiobook').length };
+  },
+  async getAudioLibrary() {
+    const base = relayBase(settings.get('relay'));
+    if (!base) return { items: [], needsRelay: true };
+    const res = await fetch(`${base}/library`).catch(() => null);
+    if (!res) throw new Error('The music library link didn’t respond. Check your internet connection.');
+    if (res.status === 404) throw new Error('The music library link isn’t right any more. Ask for a new one.');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `The music library answered ${res.status}.`);
+    return body;
+  },
+  // The relay answers with a redirect to a fresh TorBox link, so this address works straight in <audio>.
+  audioUrl: async (source, id, fileId) => `${relayBase(settings.get('relay'))}/play/${source}/${id}/${fileId}`,
   getMeta: (type, id) => Cinemeta.meta(type, id),
   listStreams,
   probeStream,
