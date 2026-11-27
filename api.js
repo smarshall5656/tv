@@ -204,6 +204,13 @@ const api = {
     if (!res.ok) throw new Error(body.error || `The search answered ${res.status}.`);
     return body;
   },
+  // Album covers Apple lacks come from Deezer, which only answers through the relay.
+  async coverSearch(query) {
+    const base = relayBase(settings.get('relay'));
+    if (!base) return [];
+    const res = await fetch(`${base}/covers?${new URLSearchParams({ q: query })}`).catch(() => null);
+    return res && res.ok ? res.json() : [];
+  },
   async addAudio(hash, title) {
     const base = relayBase(settings.get('relay'));
     const res = await fetch(`${base}/add`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash, title }) }).catch(() => null);

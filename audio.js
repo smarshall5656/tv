@@ -98,6 +98,12 @@ const Listen = (() => {
       const song = (await itunes({ media: 'music', entity: 'song', term: `${item.artist} ${t.title}`.trim() })).find(matches(item));
       if (song) return big(song);
     }
+    // Last, Deezer (through the app / relay), which has albums Apple doesn't, e.g. A$AP Rocky's "Don't Be Dumb".
+    if (api.coverSearch) {
+      const list = await api.coverSearch(term).catch(() => []);
+      const hit = list.find((r) => sameTitle(item.title, r.title) && (!item.artist || sameTitle(item.artist, r.artist)));
+      if (hit) return hit.cover;
+    }
     return '';
   }
   const words = (s) => String(s || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]+/g) || [];
